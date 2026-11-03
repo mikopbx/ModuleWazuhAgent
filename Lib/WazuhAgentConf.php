@@ -22,6 +22,7 @@ declare(strict_types=1);
 
 namespace Modules\ModuleWazuhAgent\Lib;
 
+use MikoPBX\Core\System\Util;
 use MikoPBX\Modules\Config\ConfigClass;
 use Modules\ModuleWazuhAgent\Models\ModuleWazuhAgent;
 
@@ -40,6 +41,11 @@ class WazuhAgentConf extends ConfigClass
     public function onAfterModuleDisable(): void
     {
         WazuhAgentMain::stopService();
+    }
+
+    public function createCronTasks(array &$tasks): void
+    {
+        $tasks[] = '*/1 * * * * ' . Util::which('php') . " -f {$this->moduleDir}/bin/check.php > /dev/null 2> /dev/null\n";
     }
 
     public function modelsEventChangeData($data): void

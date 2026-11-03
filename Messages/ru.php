@@ -10,6 +10,7 @@ return [
     'module_wazuh_agent_Connection' => 'Подключение',
     'module_wazuh_agent_Connected' => 'Подключён к',
     'module_wazuh_agent_NotConnected' => 'Нет подключения к менеджеру',
+    'module_wazuh_agent_EnrollmentRefused' => 'менеджер отклонил регистрацию',
     'module_wazuh_agent_AgentId' => 'ID агента на менеджере',
     'module_wazuh_agent_Packages' => 'Пакетов в инвентаре',
     'module_wazuh_agent_Version' => 'Версия агента',
@@ -18,7 +19,7 @@ return [
     'module_wazuh_agent_RegistrationPassword' => 'Пароль регистрации агента',
     'module_wazuh_agent_PasswordIsSet' => 'Пароль сохранён. Оставьте поле пустым, чтобы не менять его',
     'module_wazuh_agent_AgentName' => 'Имя агента (по умолчанию имя станции)',
-    'module_wazuh_agent_AgentGroup' => 'Группы агента через запятую',
+    'module_wazuh_agent_AgentGroup' => 'Группы агента через запятую (должны существовать на менеджере; применяются при регистрации, у зарегистрированного агента группы меняют на менеджере)',
     'module_wazuh_agent_ValidateManagerAddress' => 'Укажите адрес менеджера Wazuh',
     'module_wazuh_agent_ValidateManagerPort' => 'Порт должен быть числом от 1 до 65535',
 ];

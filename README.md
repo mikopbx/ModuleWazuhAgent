@@ -24,7 +24,7 @@ Status: test version 0.1 (x86_64 only). See [issue #1](https://github.com/mikopb
 | Manager port | Port for agent events, 1514 by default (enrollment uses 1515) |
 | Enrollment password | Only if the manager requires `authd.pass`. Never shown after saving |
 | Agent name | Name on the manager; the station host name if empty |
-| Agent groups | Comma-separated groups for enrollment |
+| Agent groups | Comma-separated groups for enrollment; they must exist on the manager, otherwise enrollment is refused (the reason is shown in the status). Applied only at enrollment: change the groups of an enrolled agent on the manager. Under the same name the manager refuses a new enrollment as a duplicate for an hour |
 
 Network: outgoing TCP 1514 and 1515 to the manager. No incoming port is opened.
 

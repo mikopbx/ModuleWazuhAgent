@@ -51,9 +51,12 @@ const ModuleWazuhAgent = {
 			.map(([name, pid]) => `${name}: ${pid || globalTranslate.module_wazuh_agent_Stopped}`)
 			.join(', ');
 		$('#wazuh-status-daemons').text(daemons);
-		const connection = data.connected
+		let connection = data.connected
 			? `${globalTranslate.module_wazuh_agent_Connected} ${data.manager} (${data.lastKeepalive})`
 			: globalTranslate.module_wazuh_agent_NotConnected;
+		if (!data.connected && data.enrollmentError) {
+			connection += `: ${globalTranslate.module_wazuh_agent_EnrollmentRefused} (${data.enrollmentError})`;
+		}
 		$('#wazuh-status-connection').text(connection);
 		$('#wazuh-status-agent-id').text(data.agentId || '—');
 		$('#wazuh-status-packages').text(data.packages);

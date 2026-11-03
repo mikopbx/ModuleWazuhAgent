@@ -10,6 +10,7 @@ return [
     'module_wazuh_agent_Connection' => 'Connection',
     'module_wazuh_agent_Connected' => 'Connected to',
     'module_wazuh_agent_NotConnected' => 'Not connected to the manager',
+    'module_wazuh_agent_EnrollmentRefused' => 'the manager refused enrollment',
     'module_wazuh_agent_AgentId' => 'Agent ID on the manager',
     'module_wazuh_agent_Packages' => 'Packages in the inventory',
     'module_wazuh_agent_Version' => 'Agent version',
@@ -18,7 +19,7 @@ return [
     'module_wazuh_agent_RegistrationPassword' => 'Agent enrollment password',
     'module_wazuh_agent_PasswordIsSet' => 'The password is saved. Leave the field empty to keep it',
     'module_wazuh_agent_AgentName' => 'Agent name (station host name by default)',
-    'module_wazuh_agent_AgentGroup' => 'Agent groups, comma-separated',
+    'module_wazuh_agent_AgentGroup' => 'Agent groups, comma-separated (must exist on the manager; applied at enrollment, groups of an enrolled agent are changed on the manager)',
     'module_wazuh_agent_ValidateManagerAddress' => 'Enter the Wazuh manager address',
     'module_wazuh_agent_ValidateManagerPort' => 'The port must be a number from 1 to 65535',
 ];

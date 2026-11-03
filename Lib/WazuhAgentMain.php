@@ -73,6 +73,12 @@ class WazuhAgentMain
         return self::moduleDir() . '/db/agent-id';
     }
 
+    /** Last enrollment refusal from the manager, for the status page (www cannot read ossec.log). */
+    private static function enrollmentErrorPath(): string
+    {
+        return self::moduleDir() . '/db/enrollment-error';
+    }
+
     public static function isInstalled(): bool
     {
         return is_file(self::agentHome() . '/bin/wazuh-agentd');
@@ -150,6 +156,80 @@ class WazuhAgentMain
 
     public static function startService(): void
     {
+        self::withLock(self::start(...));
+    }
+
+    public static function stopService(): void
+    {
+        self::withLock(self::stop(...));
+    }
+
+    public static function restartService(): void
+    {
+        self::withLock(static function (): void {
+            self::stop();
+            self::start();
+        });
+    }
+
+    /**
+     * Cron, every minute: saves the key and agent ID right after enrollment and restarts stopped daemons.
+     */
+    public static function checkService(): void
+    {
+        // Under the lock: a disable that is still stopping the agent finishes first.
+        self::withLock(static function (): void {
+            if (PbxExtensionUtils::isEnabled(self::MODULE_ID)) {
+                self::start();
+            }
+        });
+    }
+
+    /**
+     * #10: start, stop and restart from parallel callers (settings save, cron, PBX start) are serialized,
+     * otherwise both see no daemons and start a second set.
+     * A directory, not flock(): the daemons inherit an open lock file and would hold the lock forever.
+     */
+    private static function withLock(callable $action): void
+    {
+        static $depth = 0;
+        $lock = self::moduleDir() . '/db/service.lock';
+        if ($depth === 0) {
+            for ($i = 0; !@mkdir($lock); $i++) {
+                // A crashed caller leaves the directory; a normal restart takes well under a minute.
+                // rename() succeeds for one waiter only, the others wait for its new lock.
+                $stale = "$lock." . getmypid();
+                if ((@filemtime($lock) ?: time()) < time() - 120 && @rename($lock, $stale)) {
+                    // ponytail: mtime recheck narrows, not closes, the gap after filemtime(); owner PID in the lock if it matters.
+                    if ((@filemtime($stale) ?: 0) >= time() - 120) {
+                        @rename($stale, $lock);
+                    } else {
+                        SystemMessages::sysLogMsg(self::MODULE_ID, 'Removed a stale service lock');
+                        @rmdir($stale);
+                        continue;
+                    }
+                }
+                // Longer than the 120 s stale limit: a crashed caller's lock is always taken over first.
+                if ($i >= 600) {
+                    SystemMessages::sysLogMsg(self::MODULE_ID, 'Service lock is busy for 150 s, action skipped');
+                    return;
+                }
+                usleep(250000);
+            }
+        }
+        $depth++;
+        try {
+            $action();
+        } finally {
+            $depth--;
+            if ($depth === 0) {
+                @rmdir($lock);
+            }
+        }
+    }
+
+    private static function start(): void
+    {
         $settings = self::getSettings();
         if ($settings === null || trim((string)$settings->managerAddress) === '') {
             return;
@@ -158,10 +238,17 @@ class WazuhAgentMain
             SystemMessages::sysLogMsg(self::MODULE_ID, 'Agent files are missing, reinstall the module');
             return;
         }
-        if (self::runningPids() !== []) {
-            // #7: enrollment is not awaited at start; pick up the key on the next call (every Asterisk restart).
+        $running = count(self::runningPids());
+        if ($running === count(self::DAEMONS)) {
+            // #7: enrollment is not awaited at start; the key is picked up here, at the latest by cron in a minute.
             self::saveKeys();
+            self::saveEnrollmentError();
             return;
+        }
+        if ($running > 0) {
+            // One daemon died: start the whole set again.
+            SystemMessages::sysLogMsg(self::MODULE_ID, 'Agent daemon stopped, restarting the agent');
+            self::stop();
         }
         self::prepareSystem();
         self::writeInventory();
@@ -176,7 +263,7 @@ class WazuhAgentMain
         }
     }
 
-    public static function stopService(): void
+    private static function stop(): void
     {
         foreach (array_reverse(self::DAEMONS) as $daemon) {
             $pid = self::pidOf($daemon);
@@ -193,12 +280,6 @@ class WazuhAgentMain
             }
         }
         self::saveKeys();
-    }
-
-    public static function restartService(): void
-    {
-        self::stopService();
-        self::startService();
     }
 
     /**
@@ -219,7 +300,7 @@ class WazuhAgentMain
 
     /**
      * @return array{running: bool, daemons: array<string, string>, connected: bool, lastKeepalive: string,
-     *               agentId: string, version: string, manager: string, packages: int}
+     *               agentId: string, enrollmentError: string, version: string, manager: string, packages: int}
      */
     public static function getStatus(): array
     {
@@ -232,6 +313,7 @@ class WazuhAgentMain
         preg_match("/^status='([^']*)'/m", $state, $status);
         preg_match("/^last_keepalive='([^']*)'/m", $state, $keepalive);
         $agentId = trim(@file_get_contents(self::agentIdPath()) ?: '');
+        $enrollmentError = trim(@file_get_contents(self::enrollmentErrorPath()) ?: '');
         $settings = self::getSettings();
         $dpkg = @file_get_contents(self::DPKG_DIR . '/status') ?: '';
 
@@ -241,6 +323,7 @@ class WazuhAgentMain
             'connected' => ($status[1] ?? '') === 'connected',
             'lastKeepalive' => $keepalive[1] ?? '',
             'agentId' => $agentId,
+            'enrollmentError' => $enrollmentError,
             'version' => self::AGENT_VERSION,
             'manager' => $settings === null ? '' : "{$settings->managerAddress}:{$settings->managerPort}",
             'packages' => substr_count($dpkg, "\nPackage: ") + (str_starts_with($dpkg, 'Package: ') ? 1 : 0),
@@ -399,26 +482,54 @@ XML;
         chmod(self::savedKeysPath(), 0600);
         // ID and name only, for the status page (www cannot read the key).
         $fields = explode(' ', $keys);
-        file_put_contents(self::agentIdPath(), $fields[0] . ' ' . ($fields[1] ?? ''));
+        $agentId = $fields[0] . ' ' . ($fields[1] ?? '');
+        if ($agentId !== @file_get_contents(self::agentIdPath())) {
+            file_put_contents(self::agentIdPath(), $agentId);
+            chmod(self::agentIdPath(), 0644);
+        }
     }
 
     /**
-     * #6: name, groups and manager take effect only at enrollment, so a change drops the key
+     * #9: a refused agent keeps asking the manager, and only ossec.log says why (unknown group,
+     * duplicate name, password). The last enrollment result wins: "Valid key received" clears the error.
+     * The agent also re-enrolls by itself when deleted on the manager, so the old key does not mean success.
+     */
+    private static function saveEnrollmentError(): void
+    {
+        $error = '';
+        $log = self::agentHome() . '/logs/ossec.log';
+        $tail = @file_get_contents($log, false, null, max(0, (int)@filesize($log) - 65536)) ?: '';
+        if (preg_match_all('/wazuh-agentd: (?:ERROR: (.+?) \(from manager\)|INFO: Valid key received)/', $tail, $m)) {
+            $error = end($m[1]);
+        }
+        $path = self::enrollmentErrorPath();
+        if ($error === '') {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        } elseif ($error !== @file_get_contents($path)) {
+            file_put_contents($path, $error);
+            chmod($path, 0644);
+        }
+    }
+
+    /**
+     * #6: name and manager take effect only at enrollment, so a change drops the key
      * and the agent enrolls again. A missing fingerprint (update from 0.1.2) keeps the key.
+     * #8: groups are not in the fingerprint. Under the same name the manager refuses a new
+     * enrollment as a duplicate for an hour, so groups of an enrolled agent change on the manager.
      */
     private static function forgetKeysIfEnrollmentChanged(ModuleWazuhAgent $settings): void
     {
         $path = self::moduleDir() . '/db/enrollment';
-        $current = implode('|', array_map(
-            static fn ($v): string => trim((string)$v),
-            [$settings->managerAddress, $settings->agentName, $settings->agentGroup]
-        ));
+        $current = trim((string)$settings->managerAddress) . '|' . trim((string)$settings->agentName);
         $previous = @file_get_contents($path);
         if ($previous === $current) {
             return;
         }
-        if ($previous !== false) {
-            SystemMessages::sysLogMsg(self::MODULE_ID, 'Manager, name or groups changed, the agent enrolls again');
+        // A fingerprint before #8 also ends with "|groups": only rewritten, the key stays.
+        if ($previous !== false && !str_starts_with($previous, "$current|")) {
+            SystemMessages::sysLogMsg(self::MODULE_ID, 'Manager or name changed, the agent enrolls again');
             foreach ([self::agentHome() . '/etc/client.keys', self::savedKeysPath(), self::agentIdPath()] as $file) {
                 if (is_file($file) && !unlink($file)) {
                     // Keep the old fingerprint: the change is applied again on the next start.
