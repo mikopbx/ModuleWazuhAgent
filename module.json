@@ -1,0 +1,13 @@
+{
+  "developer": "MIKO",
+  "moduleUniqueID": "ModuleWazuhAgent",
+  "support_email": "help@miko.ru",
+  "version": "%ModuleVersion%",
+  "min_pbx_version": "2026.6.80",
+  "module_type": "security",
+  "release_settings": {
+    "publish_release": false,
+    "changelog_enabled": true,
+    "create_github_release": false
+  }
+}
