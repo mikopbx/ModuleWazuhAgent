@@ -159,10 +159,13 @@ class WazuhAgentMain
             return;
         }
         if (self::runningPids() !== []) {
+            // #7: enrollment is not awaited at start; pick up the key on the next call (every Asterisk restart).
+            self::saveKeys();
             return;
         }
         self::prepareSystem();
         self::writeInventory();
+        self::forgetKeysIfEnrollmentChanged($settings);
         self::writeConfig($settings);
         self::restoreKeys();
         self::fixRights();
@@ -171,7 +174,6 @@ class WazuhAgentMain
         foreach (self::DAEMONS as $daemon) {
             self::run("$home/bin/$daemon");
         }
-        self::waitAndSaveKeys();
     }
 
     public static function stopService(): void
@@ -400,19 +402,34 @@ XML;
         file_put_contents(self::agentIdPath(), $fields[0] . ' ' . ($fields[1] ?? ''));
     }
 
-    /** Enrollment happens right after wazuh-agentd starts; keep the key once it appears. */
-    private static function waitAndSaveKeys(): void
+    /**
+     * #6: name, groups and manager take effect only at enrollment, so a change drops the key
+     * and the agent enrolls again. A missing fingerprint (update from 0.1.2) keeps the key.
+     */
+    private static function forgetKeysIfEnrollmentChanged(ModuleWazuhAgent $settings): void
     {
-        $keys = self::agentHome() . '/etc/client.keys';
-        for ($i = 0; $i < 30; $i++) {
-            clearstatcache(true, $keys);
-            if (is_file($keys) && filesize($keys) > 0) {
-                self::saveKeys();
-                return;
-            }
-            usleep(500000);
+        $path = self::moduleDir() . '/db/enrollment';
+        $current = implode('|', array_map(
+            static fn ($v): string => trim((string)$v),
+            [$settings->managerAddress, $settings->agentName, $settings->agentGroup]
+        ));
+        $previous = @file_get_contents($path);
+        if ($previous === $current) {
+            return;
         }
-        SystemMessages::sysLogMsg(self::MODULE_ID, 'Agent did not enroll in 15 s, see ' . self::agentHome() . '/logs/ossec.log');
+        if ($previous !== false) {
+            SystemMessages::sysLogMsg(self::MODULE_ID, 'Manager, name or groups changed, the agent enrolls again');
+            foreach ([self::agentHome() . '/etc/client.keys', self::savedKeysPath(), self::agentIdPath()] as $file) {
+                if (is_file($file) && !unlink($file)) {
+                    // Keep the old fingerprint: the change is applied again on the next start.
+                    return;
+                }
+            }
+        }
+        // Atomic: a truncated fingerprint (full disk) would drop a valid key on the next start.
+        if (file_put_contents("$path.tmp", $current) === strlen($current)) {
+            rename("$path.tmp", $path);
+        }
     }
 
     private static function fixRights(): void
