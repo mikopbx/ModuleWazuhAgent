@@ -1,0 +1,13 @@
+# Composer package -> NVD CPE product and vendor. Packages not listed have no CPE in NVD and are left out.
+# Derived from FriendsOfPHP security-advisories (CVE of the package) and the CPE of those CVE in NVD.
+aws/aws-sdk-php	aws_software_development_kit	amazon
+ezyang/htmlpurifier	htmlpurifier	htmlpurifier
+filp/whoops	whoops	whoops_project
+firebase/php-jwt	firebase_php-jwt	google
+guzzlehttp/guzzle	guzzle	guzzlephp
+guzzlehttp/psr7	psr-7	guzzlephp
+james-heinrich/getid3	getid3	getid3
+mpdf/mpdf	mpdf	mpdf_project
+mtdowling/jmespath.php	jmespath	jmespath
+phpmailer/phpmailer	phpmailer	phpmailer_project
+phpoffice/phpspreadsheet	phpspreadsheet	phpoffice
