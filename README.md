@@ -32,7 +32,8 @@ Network: outgoing TCP 1514 and 1515 to the manager. No incoming port is opened.
 
 - False positives are expected: version matching does not see MIKO patches, and kernel CVEs
   are not filtered by the build configuration.
-- Composer dependencies are not in the inventory.
+- Composer packages (of the image and of installed modules) are in the inventory only when NVD
+  knows them: the list is in `composer-nvd-map.tsv`.
 
 ## Support
 

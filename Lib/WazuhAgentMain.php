@@ -243,6 +243,7 @@ class WazuhAgentMain
             // #7: enrollment is not awaited at start; the key is picked up here, at the latest by cron in a minute.
             self::saveKeys();
             self::saveEnrollmentError();
+            self::writeInventory();
             return;
         }
         if ($running > 0) {
@@ -343,29 +344,60 @@ class WazuhAgentMain
     }
 
     /**
-     * Writes /var/lib/dpkg/status from the image manifest.
+     * Writes /var/lib/dpkg/status from the image manifest and the Composer packages of installed modules.
      *
      * Manifest columns: source, package, version, NVD product, NVD vendor ("-" when unmapped).
      * The vendor goes to Maintainer: Wazuh matches it exactly against the CVE vendor.
+     * #11: Composer packages (image rows and modules' installed.json) take product and vendor from
+     * composer-nvd-map.tsv; unlisted ones have no CPE in NVD and are left out.
+     * Called by cron too, so module installs and removals reach the next syscollector scan.
      */
     private static function writeInventory(): void
     {
+        // Logged only when the inventory changes: cron calls this every minute.
+        $problems = [];
         $lines = @file(self::MANIFEST, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         if ($lines === false) {
-            SystemMessages::sysLogMsg(self::MODULE_ID, self::MANIFEST . ' not found, inventory is empty');
+            $problems[] = self::MANIFEST . ' not found, inventory is empty';
             $lines = [];
+        }
+        $rows = [];
+        foreach ($lines as $line) {
+            $cols = explode("\t", $line);
+            if (count($cols) >= 5) {
+                $rows[] = array_slice($cols, 0, 5);
+            }
+        }
+        $map = self::composerMap();
+        foreach (glob(dirname(self::moduleDir()) . '/*/vendor/composer/installed.json') ?: [] as $file) {
+            $json = json_decode((string)@file_get_contents($file), true);
+            if (!is_array($json)) {
+                $problems[] = "$file is not readable JSON, its packages are left out";
+                continue;
+            }
+            // Composer 2 wraps the list in "packages", Composer 1 writes the list itself.
+            $packages = $json['packages'] ?? $json;
+            // Module code is third-party: keep its name and versions out of the dpkg control format.
+            $module = preg_replace('/[^A-Za-z0-9_-]/', '', basename(dirname($file, 3)));
+            foreach (is_array($packages) ? $packages : [] as $p) {
+                if (is_array($p) && is_string($p['name'] ?? null) && is_string($p['version'] ?? null)) {
+                    $rows[] = ["composer $module", $p['name'], $p['version'], '-', '-'];
+                }
+            }
         }
         $arch = php_uname('m') === 'aarch64' ? 'arm64' : 'amd64';
         $entries = [];
-        foreach ($lines as $line) {
-            $cols = explode("\t", $line);
-            if (count($cols) < 5) {
-                continue;
-            }
-            [$source, $name, $version, $product, $vendor] = $cols;
-            // ponytail: Composer rows skipped (names contain "/", CVEs come from Dependabot); module vendors in stage 2.
-            if ($source === 'composer') {
-                continue;
+        foreach ($rows as [$source, $name, $version, $product, $vendor]) {
+            if (str_starts_with($source, 'composer')) {
+                if (!isset($map[$name])) {
+                    continue;
+                }
+                [$product, $vendor] = $map[$name];
+                // dpkg needs a leading digit; dev-master and the like have no NVD range to match anyway.
+                $version = ltrim($version, 'v');
+                if (preg_match('/^[0-9][0-9A-Za-z.+~:-]*$/', $version) !== 1) {
+                    continue;
+                }
             }
             $package = $product !== '-' ? $product : $name;
             $maintainer = $vendor !== '-' ? $vendor : 'mikopbx';
@@ -378,10 +410,32 @@ class WazuhAgentMain
                 . "Version: $version\n"
                 . "Description: MikoPBX $source package $name\n";
         }
+        $status = implode("\n", $entries);
+        if (@file_get_contents(self::DPKG_DIR . '/status') === $status) {
+            return;
+        }
+        foreach ($problems as $problem) {
+            SystemMessages::sysLogMsg(self::MODULE_ID, $problem);
+        }
         Util::mwMkdir(self::DPKG_DIR . '/info');
         $tmp = self::DPKG_DIR . '/status.tmp';
-        file_put_contents($tmp, implode("\n", $entries));
-        rename($tmp, self::DPKG_DIR . '/status');
+        // A truncated file (full tmpfs) must not replace the last complete inventory.
+        if (file_put_contents($tmp, $status) === strlen($status)) {
+            rename($tmp, self::DPKG_DIR . '/status');
+        }
+    }
+
+    /** @return array<string, array{0: string, 1: string}> Composer name => [NVD product, NVD vendor] */
+    private static function composerMap(): array
+    {
+        $map = [];
+        foreach (@file(dirname(__DIR__) . '/composer-nvd-map.tsv', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            $cols = explode("\t", $line);
+            if ($line[0] !== '#' && count($cols) === 3) {
+                $map[$cols[0]] = [$cols[1], $cols[2]];
+            }
+        }
+        return $map;
     }
 
     private static function writeConfig(ModuleWazuhAgent $settings): void
